@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SWILL Messenger</title>
+<style>
+body { margin:0; font-family:Arial; height:100vh; display:flex; background:#111; color:white; }
+.dark { background:#111; color:white; }
+.light { background:#fff; color:black; }
+
+#sidebar { width:300px; background:#1e1e1e; overflow-y:auto;}
+#chat { flex:1; display:flex; flex-direction:column;}
+
+.user { padding:10px; border-bottom:1px solid #333; cursor:pointer;}
+.user:hover { background:#333;}
+
+#messages { flex:1; overflow-y:auto; padding:10px;}
+.msg { padding:8px; margin:5px; border-radius:8px; max-width:60%; word-wrap:break-word;}
+.me { background:#4caf50; margin-left:auto;}
+.other { background:#333; margin-right:auto;}
+.replyBox { font-size:12px; color:yellow; margin-bottom:5px; }
+
+#input { display:flex;}
+#msgInput { flex:1; padding:10px; resize:none; }
+
+.screen { position:fixed; top:0; left:0; width:100%; height:100%; background:#000a; display:flex; justify-content:center; align-items:center; }
+
+.box { background:white; padding:20px; border-radius:10px; width:300px; }
+button { padding:5px 10px; cursor:pointer; margin-top:5px; }
+</style>
+</head>
+<body class="dark">
+
+<!-- Регистрация -->
+<div id="registerScreen" class="screen">
+  <div class="box">
+    <h3>Регистрация</h3>
+    <input id="regName" placeholder="Введите username"><br>
+    <button onclick="register()">Создать</button>
+  </div>
+</div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+<h3>Чаты</h3>
+<div id="chats"></div>
+<button onclick="openProfile()">Профиль</button>
+<h3>Поиск</h3>
+<input id="search">
+<button onclick="searchUser()">Найти</button>
+<button onclick="createGroup()">Создать группу</button>
+</div>
+
+<!-- Чат -->
+<div id="chat">
+<div id="header">Выбери чат</div>
+<div id="replyBox" class="replyBox"></div>
+<div id="messages"></div>
+<div id="input">
+<textarea id="msgInput"></textarea>
+<button onclick="sendMessage()">➤</button>
+</div>
+</div>
+
+<!-- Профиль -->
+<div id="profileScreen" class="screen" style="display:none;">
+  <div class="box">
+    <h3>Профиль</h3>
+    <div>Username: <span id="profileName"></span></div>
+    <button onclick="toggleTheme()">Сменить тему</button><br>
+    <button onclick="closeProfile()">Назад</button>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getFirestore, collection, addDoc, onSnapshot, query, where, doc, setDoc, getDoc, orderBy, updateDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBuTQ0dOAciBNDYpa6UURAnyaFCDAY7Pio",
+  authDomain: "nita-3d3ca.firebaseapp.com",
+  projectId: "nita-3d3ca",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth();
+const db = getFirestore();
+
+let user, currentChat = null, reply = null, isGroup=false, groupName="";
+await signInAnonymously(auth);
+user = auth.currentUser;
+
+// ===== Проверка регистрации =====
+async function checkUser(){
+  const snap = await getDoc(doc(db,"users",user.uid));
+  if(snap.exists()){
+    document.getElementById("registerScreen").style.display="none";
+    loadProfile();
+    loadChats();
+  }else{
+    document.getElementById("registerScreen").style.display="flex";
+  }
+}
+
+// ===== Регистрация =====
+window.register = async ()=>{
+  const name = document.getElementById("regName").value.trim();
+  if(!name) return;
+  await setDoc(doc(db,"users",user.uid),{username:name,online:true});
+  document.getElementById("registerScreen").style.display="none";
+  loadProfile();
+  loadChats();
+}
+
+// ===== Профиль =====
+window.openProfile = ()=>{
+  document.getElementById("profileScreen").style.display="flex";
+  loadProfile();
+}
+window.closeProfile = ()=>{
+  document.getElementById("profileScreen").style.display="none";
+}
+window.toggleTheme = ()=>{
+  document.body.classList.toggle("dark");
+  document.body.classList.toggle("light");
+}
+async function loadProfile(){
+  const snap = await getDoc(doc(db,"users",user.uid));
+  if(snap.exists()) document.getElementById("profileName").innerText=snap.data().username;
+}
+
+// ===== Username =====
+async function getUsername(uid){
+  const snap = await getDoc(doc(db,"users",uid));
+  return snap.exists()? snap.data().username : uid;
+}
+
+// ===== Поиск пользователей =====
+window.searchUser = async ()=>{
+  const val = document.getElementById("search").value.trim();
+  if(!val) return;
+  const q = query(collection(db,"users"),where("username","==",val));
+  onSnapshot(q,(snap)=>{snap.forEach(docu=>startChat(docu.id));});
+}
+
+// ===== Создать чат =====
+async function startChat(otherId){
+  currentChat=[user.uid,otherId].sort().join("_");
+  isGroup=false;
+  await setDoc(doc(db,"chats",currentChat),{users:[user.uid,otherId]});
+  loadChats();
+  openChat(currentChat,[otherId]);
+}
+
+// ===== Создать группу =====
+window.createGroup = async ()=>{
+  const name = prompt("Название группы:");
+  if(!name) return;
+  const ids = [user.uid];
+  const chatId = "group_"+Date.now();
+  await setDoc(doc(db,"chats",chatId),{users:ids,isGroup:true,name:name});
+  loadChats();
+  openChat(chatId,ids);
+  isGroup=true;
+  groupName=name;
+}
+
+// ===== Список чатов =====
+function loadChats(){
+  const q = query(collection(db,"chats"));
+  onSnapshot(q,async snap=>{
+    const div=document.getElementById("chats");
+    div.innerHTML="";
+    for(const docu of snap.docs){
+      const d = docu.data();
+      if(d.users.includes(user.uid)||d.isGroup){
+        let displayName="";
+        if(d.isGroup){ displayName=d.name; }
+        else{
+          const otherId = d.users.find(u=>u!==user.uid);
+          displayName = await getUsername(otherId);
+        }
+        const el = document.createElement("div");
+        el.className="user";
+        el.innerText = displayName;
+        el.onclick = ()=>openChat(docu.id,d.users);
+        div.appendChild(el);
+      }
+    }
+  });
+}
+
+// ===== Открыть чат =====
+async function openChat(chatId,userIds){
+  currentChat=chatId;
+  isGroup=false;
+  groupName="";
+  if(Array.isArray(userIds)&&userIds.length>1) {
+    isGroup=true;
+    groupName="Группа";
+  }
+  const header = document.getElementById("header");
+  if(isGroup){ header.innerText="Группа: "+groupName; }
+  else{ 
+    const otherId = userIds.find(u=>u!==user.uid);
+    header.innerText="Чат с "+await getUsername(otherId); 
+  }
+
+  const q = query(collection(db,"messages"),where("chat","==",chatId),orderBy("time"));
+  onSnapshot(q,snap=>{
+    const div=document.getElementById("messages");
+    div.innerHTML="";
+    snap.forEach(docu=>{
+      const d = docu.data();
+      const el = document.createElement("div");
+      el.className="msg "+(d.uid===user.uid?"me":"other");
+      el.innerHTML=(d.reply?`<small>reply: ${d.reply}</small><br>`:"")+d.text+"<br><small>"+new Date(d.time).toLocaleTimeString()+"</small>";
+      el.onclick=()=>{ reply=d.text; document.getElementById("replyBox").innerText="Reply: "+reply; };
+      div.appendChild(el);
+    });
+    div.scrollTop=div.scrollHeight;
+  });
+}
+
+// ===== Отправка сообщений =====
+window.sendMessage = async ()=>{
+  const text = document.getElementById("msgInput").value.trim();
+  if(!text||!currentChat) return;
+  await addDoc(collection(db,"messages"),{
+    chat:currentChat,
+    text,
+    uid:user.uid,
+    time:Date.now(),
+    reply:reply||null,
+    read:false
+  });
+  reply=null;
+  document.getElementById("replyBox").innerText="";
+  document.getElementById("msgInput").value="";
+}
+
+// ===== ENTER =====
+document.getElementById("msgInput").addEventListener("keydown",(e)=>{
+  if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMessage(); }
+});
+
+// ===== Онлайн =====
+setInterval(async ()=>{
+  const snap = await getDoc(doc(db,"users",user.uid));
+  if(snap.exists()) await updateDoc(doc(db,"users",user.uid),{online:true});
+},5000);
+
+checkUser();
+</script>
+
+</body>
+</html>
